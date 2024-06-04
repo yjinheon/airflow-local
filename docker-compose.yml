@@ -1,0 +1,182 @@
+version: "3"
+
+x-spark-common: &spark-common
+  image: bitnami/spark:latest
+  volumes:
+    - ${AIRFLOW_PROJ_DIR:-.}/spark/jobs:/opt/bitnami/spark/jobs
+  networks:
+    - airflow-network
+
+x-airflow-common: &airflow-common
+  #image:
+  #  ${AIRFLOW_IMAGE_NAME:-apache/airflow:2.7.3}
+  build: ${AIRFLOW_PROJ_DIR:-.}/docker/airflow
+  environment: &airflow-common-env # docker container 경로 직접 지정
+    AIRFLOW__DOCKER_VOLUMES: ${AIRFLOW__DOCKER_VOLUMES}
+  volumes:
+    - ${AIRFLOW_PROJ_DIR:-.}/dags:/opt/airflow/dags
+    - ${AIRFLOW_PROJ_DIR:-.}/logs:/opt/airflow/logs
+    - ${AIRFLOW_PROJ_DIR:-.}/config:/opt/airflow/config
+    - ${AIRFLOW_PROJ_DIR:-.}/plugins:/opt/airflow/plugins
+    - ${AIRFLOW_PROJ_DIR:-.}/outputs:/opt/airflow/outputs
+    - ${AIRFLOW_PROJ_DIR:-.}/config/airflow.cfg:/opt/airflow/airflow.cfg
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on: &airflow-common-depends-on
+    postgres:
+      condition: service_healthy
+services:
+  postgres:
+    image: postgres:14.0
+    container_name: postgres
+    logging:
+      driver: "json-file"
+      options:
+        max-file: "5"
+        max-size: "10m"
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - ${AIRFLOW__DOCKER_VOLUMES}/${POSTGRES_DB_VOLUME}:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      timeout: 45s
+      interval: 10s
+      retries: 10
+      start_period: 5s
+    restart: always
+    ports:
+      - "5432:5432"
+  redis:
+    image: redis:latest
+    ports:
+      - 6379:6379
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 30s
+      retries: 50
+    restart: always
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+
+  airflow-worker:
+    <<: *airflow-common
+    command: celery worker
+    healthcheck:
+      # yamllint disable rule:line-length
+      test:
+        - "CMD-SHELL"
+        - 'celery --app airflow.providers.celery.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}" || celery --app airflow.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}"'
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    environment:
+      <<: *airflow-common-env
+      DUMB_INIT_SETSID: "0"
+    restart: always
+
+  airflow-triggerer:
+    <<: *airflow-common
+    command: triggerer
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'airflow jobs check --job-type TriggererJob --hostname "$${HOSTNAME}"',
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - /opt/airflow/airflow_init.sh
+    environment:
+      <<: *airflow-common-env
+      _AIRFLOW_DB_MIGRATE: "true"
+      _AIRFLOW_WWW_USER_CREATE: "true"
+      _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-airflow}
+      _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-airflow}
+      _PIP_ADDITIONAL_REQUIREMENTS: ""
+    user: "0:0"
+    volumes:
+      - ${AIRFLOW_PROJ_DIR:-.}:/sources
+      - ${AIRFLOW_PROJ_DIR:-.}/airflow_init.sh:/opt/airflow/airflow_init.sh
+  airflow-cli:
+    <<: *airflow-common
+    profiles:
+      - debug
+    environment:
+      <<: *airflow-common-env
+      CONNECTION_CHECK_MAX_COUNT: "0"
+    # Workaround for entrypoint issue. See: https://github.com/apache/airflow/issues/16252
+    command:
+      - bash
+      - -c
+      - airflow
+  ######################################################
+  # SPARK SERVICES
+  ######################################################
+  # livy:
+  #   build: ${AIRFLOW_PROJ_DIR:-.}/docker/livy
+  #   restart: always
+  #   container_name: livy
+  #   logging:
+  #     driver: "json-file"
+  #     options:
+  #       max-file: "5"
+  #       max-size: "10m"
+  #   depends_on:
+  #     - spark-worker
+  #   ports:
+  #     - "32758:8998"
+  #   environment:
+  #     - SPARK_MASTER_ENDPOINT=spark-master
+  #     - SPARK_MASTER_PORT=7077
+  #     - DEPLOY_MODE=client
+  #   healthcheck:
+  #     test: ["CMD", "nc", "-z", "livy", "8998"]
+  #     timeout: 45s
+  #     interval: 10s
+  #     retries: 10
+volumes:
+  postgres-db-volume:
+  redis_data:
+networks:
+  default:
+    name: airflow-network
