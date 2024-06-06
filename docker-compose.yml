@@ -1,12 +1,8 @@
 version: "3"
-
 x-spark-common: &spark-common
   image: bitnami/spark:latest
   volumes:
     - ${AIRFLOW_PROJ_DIR:-.}/spark/jobs:/opt/bitnami/spark/jobs
-  networks:
-    - airflow-network
-
 x-airflow-common: &airflow-common
   #image:
   #  ${AIRFLOW_IMAGE_NAME:-apache/airflow:2.7.3}
@@ -27,7 +23,7 @@ x-airflow-common: &airflow-common
 services:
   postgres:
     image: postgres:14.0
-    container_name: postgres
+    container_name: airflow_postgres
     logging:
       driver: "json-file"
       options:
@@ -89,7 +85,6 @@ services:
     <<: *airflow-common
     command: celery worker
     healthcheck:
-      # yamllint disable rule:line-length
       test:
         - "CMD-SHELL"
         - 'celery --app airflow.providers.celery.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}" || celery --app airflow.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}"'
@@ -152,28 +147,22 @@ services:
   ######################################################
   # SPARK SERVICES
   ######################################################
-  # livy:
-  #   build: ${AIRFLOW_PROJ_DIR:-.}/docker/livy
-  #   restart: always
-  #   container_name: livy
-  #   logging:
-  #     driver: "json-file"
-  #     options:
-  #       max-file: "5"
-  #       max-size: "10m"
-  #   depends_on:
-  #     - spark-worker
-  #   ports:
-  #     - "32758:8998"
-  #   environment:
-  #     - SPARK_MASTER_ENDPOINT=spark-master
-  #     - SPARK_MASTER_PORT=7077
-  #     - DEPLOY_MODE=client
-  #   healthcheck:
-  #     test: ["CMD", "nc", "-z", "livy", "8998"]
-  #     timeout: 45s
-  #     interval: 10s
-  #     retries: 10
+  spark-master:
+    <<: *spark-common
+    command: bin/spark-class org.apache.spark.deploy.master.Master
+    ports:
+      - "9090:8080"
+      - "7077:7077"
+  spark-worker:
+    <<: *spark-common
+    command: bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+    depends_on:
+      - spark-master
+    environment:
+      SPARK_MODE: worker
+      SPARK_WORKER_CORES: 2
+      SPARK_WORKER_MEMORY: 1g
+      SPARK_MASTER_URL: spark://spark-master:7077
 volumes:
   postgres-db-volume:
   redis_data:
