@@ -1,20 +1,5 @@
 #!/bin/bash
 
-function ver() {
-  printf "%04d%04d%04d%04d" ${1//./ }
-}
-
-airflow_version=$(AIRFLOW__LOGGING__LOGGING_LEVEL=INFO && gosu airflow airflow version)
-airflow_version_comparable=$(ver $${airflow_version})
-min_airflow_version=2.2.0
-min_airflow_version_comparable=$(ver $${min_airflow_version})
-if (( airflow_version_comparable < min_airflow_version_comparable )); then
-echo
-echo -e "\033[1;31mERROR!!!: Too old Airflow version $${airflow_version}!\e[0m"
-echo "The minimum Airflow version supported: $${min_airflow_version}. Only use this or higher!"
-echo
-exit 1
-fi
 if [[ -z "${AIRFLOW_UID}" ]]; then
 echo
 echo -e "\033[1;33mWARNING!!!: AIRFLOW_UID not set!\e[0m"
@@ -24,6 +9,7 @@ echo "For other operating systems you can get rid of the warning with manually c
 echo "    See: https://airflow.apache.org/docs/apache-airflow/stable/howto/docker-compose/index.html#setting-the-right-airflow-user"
 echo
 fi
+
 one_meg=1048576
 mem_available=$(($(getconf _PHYS_PAGES) * $$(getconf PAGE_SIZE) / one_meg))
 cpus_available=$(grep -cE 'cpu[0-9]+' /proc/stat)
